@@ -228,8 +228,8 @@ def ami_energy_usages_request(
         "$premiseNumber: String!",
         "$servicePointNumber: String!",
         "$meterPointNumber: String!",
-        "$dateFrom: Date!",
-        "$dateTo: Date!",
+        "$dateFrom: DateTime!",
+        "$dateTo: DateTime!",
     ),
     field_arguments: str | None = (
         "meterNumber: $meterNumber, "
