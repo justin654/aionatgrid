@@ -678,15 +678,8 @@ class NationalGridClient:
             DataExtractionError: When the expected data path is missing
             ValueError: When the response contains GraphQL errors
         """
-        # Format with timezone offset for .NET DateTimeOffset compatibility
-        if isinstance(date_from, date):
-            from_str = f"{date_from.isoformat()}T00:00:00.000+00:00"
-        else:
-            from_str = date_from
-        if isinstance(date_to, date):
-            to_str = f"{date_to.isoformat()}T00:00:00.000+00:00"
-        else:
-            to_str = date_to
+        from_str = date_from.isoformat() if isinstance(date_from, date) else date_from
+        to_str = date_to.isoformat() if isinstance(date_to, date) else date_to
         request = ami_energy_usages_request(
             variables={
                 "meterNumber": meter_number,
