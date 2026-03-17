@@ -181,11 +181,17 @@ def extract_energy_usages(response: GraphQLResponse) -> list[EnergyUsage]:
     return cast(list[EnergyUsage], nodes)
 
 
-def extract_ami_energy_usages(response: GraphQLResponse) -> list[AmiEnergyUsage]:
+def extract_ami_energy_usages(
+    response: GraphQLResponse,
+    root_field: str = "amiEnergyUsages15Min",
+) -> list[AmiEnergyUsage]:
     """Extract AMI energy usages from a GraphQL response.
 
     Args:
         response: The GraphQL response from an AMI energy usages query
+        root_field: The root field name in the response data
+            (default: ``"amiEnergyUsages15Min"``; use ``"amiEnergyUsages"``
+            for the legacy hourly endpoint)
 
     Returns:
         List of AMI energy usages
@@ -203,19 +209,19 @@ def extract_ami_energy_usages(response: GraphQLResponse) -> list[AmiEnergyUsage]
             response_data=None,
         )
 
-    ami_energy_usages = response.data.get("amiEnergyUsages")
+    ami_energy_usages = response.data.get(root_field)
     if ami_energy_usages is None:
         raise DataExtractionError(
-            "Missing 'amiEnergyUsages' field in response",
-            path="data.amiEnergyUsages",
+            f"Missing '{root_field}' field in response",
+            path=f"data.{root_field}",
             response_data=response.data,
         )
 
     nodes = ami_energy_usages.get("nodes")
     if nodes is None:
         raise DataExtractionError(
-            "Missing 'nodes' field in amiEnergyUsages",
-            path="data.amiEnergyUsages.nodes",
+            f"Missing 'nodes' field in {root_field}",
+            path=f"data.{root_field}.nodes",
             response_data=response.data,
         )
 

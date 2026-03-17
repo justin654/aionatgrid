@@ -239,15 +239,23 @@ def ami_energy_usages_request(
         "dateFrom: $dateFrom, "
         "dateTo: $dateTo"
     ),
-    operation_name: str = "NrtDailyUsage",
+    operation_name: str = "NrtDailyUsage15Min",
+    root_field: str = "amiEnergyUsages15Min",
 ) -> GraphQLRequest:
-    """Build an AMI energy usages (hourly) query.
+    """Build an AMI energy usages query.
+
+    Defaults to the ``amiEnergyUsages15Min`` / ``NrtDailyUsage15Min``
+    endpoint which returns 15-minute interval data and works around the
+    DateTimeOffset casting bug in the legacy ``amiEnergyUsages`` resolver.
+
+    Pass ``root_field="amiEnergyUsages"`` and
+    ``operation_name="NrtDailyUsage"`` to use the legacy hourly endpoint.
 
     This request targets the energyusage-cu-uwp-gql GraphQL endpoint.
     """
     return StandardQuery(
         operation_name=operation_name,
-        root_field="amiEnergyUsages",
+        root_field=root_field,
         selection_set=selection_set,
         variables=variables,
         variable_definitions=variable_definitions,

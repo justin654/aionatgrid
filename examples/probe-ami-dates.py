@@ -1,10 +1,4 @@
-"""Deep probe of the amiEnergyUsages API to find a working approach.
-
-Tests:
-1. GraphQL introspection to discover the actual schema types
-2. Different date formats with $dateFrom: Date! variables
-3. Inline date arguments (bypassing variable type system)
-4. Raw HTTP to see full response details
+"""Final deep probe - test edge cases and isolate which parameter fails.
 
 Usage:
     python probe-ami-dates.py --username YOUR_EMAIL --password YOUR_PASSWORD
@@ -15,18 +9,17 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import time
 
 import aiohttp
 
 from aionatgrid import NationalGridClient, NationalGridConfig
-from aionatgrid.graphql import GraphQLRequest, GraphQLResponse, compose_query
+from aionatgrid.graphql import GraphQLRequest
 from aionatgrid.helpers import create_cookie_jar
 from aionatgrid.queries import ami_energy_usages_request
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Deep probe AMI date formats")
+    parser = argparse.ArgumentParser(description="Final deep probe")
     parser.add_argument("--username", required=True, help="National Grid username")
     parser.add_argument("--password", required=True, help="National Grid password")
     return parser.parse_args()
@@ -35,214 +28,37 @@ def parse_args() -> argparse.Namespace:
 ENDPOINT = "https://myaccount.nationalgrid.com/api/energyusage-cu-uwp-gql"
 
 
-async def introspect_schema(client: NationalGridClient) -> None:
-    """Run introspection queries to discover the schema."""
-    print("=== Schema Introspection ===")
-    print()
-
-    # Query 1: Get the amiEnergyUsages field definition
-    introspection_query = GraphQLRequest(
-        query="""
-        {
-            __type(name: "Query") {
-                fields {
-                    name
-                    args {
-                        name
-                        type {
-                            name
-                            kind
-                            ofType {
-                                name
-                                kind
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        """,
-        variables=None,
-        operation_name=None,
+async def test_query(client, label, payload):
+    """Execute a raw GraphQL payload and print results."""
+    print(f"--- {label} ---")
+    request = GraphQLRequest(
+        query=payload["query"],
+        variables=payload.get("variables"),
+        operation_name=payload.get("operationName"),
         endpoint=ENDPOINT,
     )
-
     try:
-        response = await client.execute(introspection_query)
+        response = await client.execute(request)
         if response.errors:
-            print(f"  Introspection errors: {json.dumps(response.errors, indent=2)}")
+            for err in response.errors:
+                msg = err.get("message", "?")
+                code = err.get("extensions", {}).get("code", "")
+                path = err.get("path", [])
+                print(f"  ERROR [{code}] {path}: {msg}")
         elif response.data:
-            query_type = response.data.get("__type", {})
-            fields = query_type.get("fields", [])
-            for field in fields:
-                if "ami" in field.get("name", "").lower():
-                    print(f"  Field: {field['name']}")
-                    for arg in field.get("args", []):
-                        arg_type = arg.get("type", {})
-                        type_name = arg_type.get("name") or (
-                            arg_type.get("ofType", {}).get("name", "?")
-                            + "!"
-                        )
-                        print(f"    Arg: {arg['name']}: {type_name}")
-                    print()
+            ami = response.data.get("amiEnergyUsages")
+            if ami:
+                nodes = ami.get("nodes", [])
+                print(f"  SUCCESS! {len(nodes)} records")
+                if nodes and len(nodes) > 0:
+                    print(f"  First: {json.dumps(nodes[0])}")
+            else:
+                print(f"  Data returned but amiEnergyUsages is: {ami}")
+                print(f"  Full data: {json.dumps(response.data)}")
+        else:
+            print(f"  Raw response: {response.raw}")
     except Exception as e:
-        print(f"  Introspection failed: {type(e).__name__}: {e}")
-
-    # Query 2: Get the Date scalar type details
-    print("--- Date scalar type ---")
-    date_type_query = GraphQLRequest(
-        query="""
-        {
-            __type(name: "Date") {
-                name
-                kind
-                description
-                specifiedByURL
-            }
-        }
-        """,
-        variables=None,
-        operation_name=None,
-        endpoint=ENDPOINT,
-    )
-
-    try:
-        response = await client.execute(date_type_query)
-        if response.data:
-            type_info = response.data.get("__type")
-            print(f"  {json.dumps(type_info, indent=2)}")
-    except Exception as e:
-        print(f"  Failed: {e}")
-
-    # Query 3: Check if DateTime type exists
-    print()
-    print("--- DateTime scalar type ---")
-    datetime_type_query = GraphQLRequest(
-        query="""
-        {
-            __type(name: "DateTime") {
-                name
-                kind
-                description
-                specifiedByURL
-            }
-        }
-        """,
-        variables=None,
-        operation_name=None,
-        endpoint=ENDPOINT,
-    )
-
-    try:
-        response = await client.execute(datetime_type_query)
-        if response.data:
-            type_info = response.data.get("__type")
-            print(f"  {json.dumps(type_info, indent=2)}")
-    except Exception as e:
-        print(f"  Failed: {e}")
-
-    # Query 4: Check if DateTimeOffset type exists
-    print()
-    print("--- DateTimeOffset scalar type ---")
-    dto_type_query = GraphQLRequest(
-        query="""
-        {
-            __type(name: "DateTimeOffset") {
-                name
-                kind
-                description
-                specifiedByURL
-            }
-        }
-        """,
-        variables=None,
-        operation_name=None,
-        endpoint=ENDPOINT,
-    )
-
-    try:
-        response = await client.execute(dto_type_query)
-        if response.data:
-            type_info = response.data.get("__type")
-            print(f"  {json.dumps(type_info, indent=2)}")
-    except Exception as e:
-        print(f"  Failed: {e}")
-
-    print()
-
-
-async def test_raw_http(
-    session: aiohttp.ClientSession,
-    access_token: str,
-    meter_number: str,
-    premise_number: str,
-    sp: str,
-    mp: str,
-) -> None:
-    """Send raw HTTP requests to see full response details."""
-    print("=== Raw HTTP Test (plain date, full response) ===")
-
-    payload = {
-        "operationName": "NrtDailyUsage",
-        "query": (
-            "query NrtDailyUsage("
-            "$meterNumber: String!, "
-            "$premiseNumber: String!, "
-            "$servicePointNumber: String!, "
-            "$meterPointNumber: String!, "
-            "$dateFrom: Date!, "
-            "$dateTo: Date!"
-            ") { amiEnergyUsages("
-            "meterNumber: $meterNumber, "
-            "premiseNumber: $premiseNumber, "
-            "servicePointNumber: $servicePointNumber, "
-            "meterPointNumber: $meterPointNumber, "
-            "dateFrom: $dateFrom, "
-            "dateTo: $dateTo"
-            ") { nodes { date fuelType quantity } } }"
-        ),
-        "variables": {
-            "meterNumber": meter_number,
-            "premiseNumber": premise_number,
-            "servicePointNumber": sp,
-            "meterPointNumber": mp,
-            "dateFrom": "2026-03-10",
-            "dateTo": "2026-03-14",
-        },
-    }
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {access_token}",
-    }
-
-    async with session.post(ENDPOINT, json=payload, headers=headers) as resp:
-        print(f"  Status: {resp.status}")
-        print(f"  Headers: {dict(resp.headers)}")
-        body = await resp.json(content_type=None)
-        print(f"  Body: {json.dumps(body, indent=2)}")
-    print()
-
-
-async def test_energyusagecosts_for_comparison(
-    client: NationalGridClient,
-    account_number: str,
-    region: str,
-) -> None:
-    """Test energyUsageCosts (which also uses Date!) to see if it works."""
-    print("=== Comparison: energyUsageCosts (also uses $date: Date!) ===")
-    try:
-        from datetime import date
-        costs = await client.get_energy_usage_costs(
-            account_number=account_number,
-            query_date=date(2026, 3, 14),
-            company_code=region,
-        )
-        print(f"  SUCCESS! Got {len(costs)} cost records")
-        if costs:
-            print(f"  First: {json.dumps(costs[0])}")
-    except Exception as e:
-        print(f"  FAILED: {type(e).__name__}: {e}")
+        print(f"  EXCEPTION: {type(e).__name__}: {e}")
     print()
 
 
@@ -253,7 +69,6 @@ async def main() -> None:
     cookie_jar = create_cookie_jar()
     async with aiohttp.ClientSession(cookie_jar=cookie_jar) as session:
         async with NationalGridClient(config=config, session=session) as client:
-            # Discover account and meter info
             print("=== Discovering account info ===")
             accounts = await client.get_linked_accounts()
             if not accounts:
@@ -261,13 +76,8 @@ async def main() -> None:
                 return
 
             account_number = accounts[0]["billingAccountId"]
-            print(f"Account: {account_number}")
-
             billing_account = await client.get_billing_account(account_number)
             premise_number = str(billing_account["premiseNumber"])
-            region = billing_account.get("region", "")
-            print(f"Premise: {premise_number}")
-            print(f"Region: {region}")
 
             meters = billing_account["meter"]["nodes"]
             ami_meter = None
@@ -280,50 +90,117 @@ async def main() -> None:
                 print("No AMI smart meter found!")
                 return
 
-            meter_number = str(ami_meter["meterNumber"])
+            mn = str(ami_meter["meterNumber"])
             sp = str(ami_meter["servicePointNumber"])
             mp = str(ami_meter["meterPointNumber"])
-            print(f"Meter: {meter_number}, SP: {sp}, MP: {mp}")
-            print(f"Fuel type: {ami_meter.get('fuelType')}")
+            ft = ami_meter.get("fuelType", "?")
+            print(f"Meter: {mn}, SP: {sp}, MP: {mp}, Fuel: {ft}")
+            print(f"Premise: {premise_number}")
             print()
 
-            # 1. Introspect the schema
-            await introspect_schema(client)
+            base_vars = {
+                "meterNumber": mn,
+                "premiseNumber": premise_number,
+                "servicePointNumber": sp,
+                "meterPointNumber": mp,
+            }
 
-            # 2. Test energyUsageCosts for comparison (also uses Date!)
-            if region:
-                await test_energyusagecosts_for_comparison(
-                    client, account_number, region
-                )
+            # Test 1: Standard query (confirm the error)
+            print("=== Test 1: Standard query (confirm error) ===")
+            await test_query(client, "Standard Date! with YYYY-MM-DD", {
+                "operationName": "NrtDailyUsage",
+                "query": """query NrtDailyUsage($meterNumber: String!, $premiseNumber: String!, $servicePointNumber: String!, $meterPointNumber: String!, $dateFrom: Date!, $dateTo: Date!) {
+  amiEnergyUsages(meterNumber: $meterNumber, premiseNumber: $premiseNumber, servicePointNumber: $servicePointNumber, meterPointNumber: $meterPointNumber, dateFrom: $dateFrom, dateTo: $dateTo) {
+    nodes { date fuelType quantity }
+  }
+}""",
+                "variables": {**base_vars, "dateFrom": "2026-03-10", "dateTo": "2026-03-14"},
+            })
 
-            # 3. Get access token for raw HTTP test
-            inner_session = await client._ensure_session()
-            access_token = await client._get_access_token(inner_session)
+            # Test 2: Try with nullable Date (Date instead of Date!)
+            print("=== Test 2: Nullable Date (without !) ===")
+            await test_query(client, "Nullable $dateFrom: Date, $dateTo: Date", {
+                "operationName": "NrtDailyUsage",
+                "query": """query NrtDailyUsage($meterNumber: String!, $premiseNumber: String!, $servicePointNumber: String!, $meterPointNumber: String!, $dateFrom: Date, $dateTo: Date) {
+  amiEnergyUsages(meterNumber: $meterNumber, premiseNumber: $premiseNumber, servicePointNumber: $servicePointNumber, meterPointNumber: $meterPointNumber, dateFrom: $dateFrom, dateTo: $dateTo) {
+    nodes { date fuelType quantity }
+  }
+}""",
+                "variables": {**base_vars, "dateFrom": "2026-03-10", "dateTo": "2026-03-14"},
+            })
 
-            # 4. Raw HTTP test
-            if access_token:
-                await test_raw_http(
-                    session, access_token,
-                    meter_number, premise_number, sp, mp,
-                )
+            # Test 3: Try with null dates
+            print("=== Test 3: Null dates ===")
+            await test_query(client, "Null dateFrom and dateTo", {
+                "operationName": "NrtDailyUsage",
+                "query": """query NrtDailyUsage($meterNumber: String!, $premiseNumber: String!, $servicePointNumber: String!, $meterPointNumber: String!, $dateFrom: Date, $dateTo: Date) {
+  amiEnergyUsages(meterNumber: $meterNumber, premiseNumber: $premiseNumber, servicePointNumber: $servicePointNumber, meterPointNumber: $meterPointNumber, dateFrom: $dateFrom, dateTo: $dateTo) {
+    nodes { date fuelType quantity }
+  }
+}""",
+                "variables": {**base_vars, "dateFrom": None, "dateTo": None},
+            })
 
-            # 5. Test the standard library call
-            print("=== Standard library call ===")
-            from datetime import date
-            request = ami_energy_usages_request(
-                variables={
-                    "meterNumber": meter_number,
-                    "premiseNumber": premise_number,
-                    "servicePointNumber": sp,
-                    "meterPointNumber": mp,
-                    "dateFrom": "2026-03-10",
-                    "dateTo": "2026-03-14",
-                },
-            )
-            print(f"  Query: {request.query}")
-            print(f"  Variables: {json.dumps(dict(request.variables))}")
-            try:
-                response = await client.execute(request)
-                if response.errors:
-                    print(f"  Errors: {json.dumps(response.errors, indent=2)}")
-                else:
+            # Test 4: Try without dateFrom/dateTo entirely
+            print("=== Test 4: Omit dateFrom/dateTo from variables ===")
+            await test_query(client, "No date variables at all", {
+                "operationName": "NrtDailyUsage",
+                "query": """query NrtDailyUsage($meterNumber: String!, $premiseNumber: String!, $servicePointNumber: String!, $meterPointNumber: String!) {
+  amiEnergyUsages(meterNumber: $meterNumber, premiseNumber: $premiseNumber, servicePointNumber: $servicePointNumber, meterPointNumber: $meterPointNumber) {
+    nodes { date fuelType quantity }
+  }
+}""",
+                "variables": base_vars,
+            })
+
+            # Test 5: Try with only dateFrom (no dateTo)
+            print("=== Test 5: Only dateFrom, no dateTo ===")
+            await test_query(client, "Only dateFrom", {
+                "operationName": "NrtDailyUsage",
+                "query": """query NrtDailyUsage($meterNumber: String!, $premiseNumber: String!, $servicePointNumber: String!, $meterPointNumber: String!, $dateFrom: Date!) {
+  amiEnergyUsages(meterNumber: $meterNumber, premiseNumber: $premiseNumber, servicePointNumber: $servicePointNumber, meterPointNumber: $meterPointNumber, dateFrom: $dateFrom) {
+    nodes { date fuelType quantity }
+  }
+}""",
+                "variables": {**base_vars, "dateFrom": "2026-03-10"},
+            })
+
+            # Test 6: Try with String type for dates (bypass Date scalar entirely)
+            print("=== Test 6: String! type for dates ===")
+            await test_query(client, "String! type for dateFrom/dateTo", {
+                "operationName": "NrtDailyUsage",
+                "query": """query NrtDailyUsage($meterNumber: String!, $premiseNumber: String!, $servicePointNumber: String!, $meterPointNumber: String!, $dateFrom: String!, $dateTo: String!) {
+  amiEnergyUsages(meterNumber: $meterNumber, premiseNumber: $premiseNumber, servicePointNumber: $servicePointNumber, meterPointNumber: $meterPointNumber, dateFrom: $dateFrom, dateTo: $dateTo) {
+    nodes { date fuelType quantity }
+  }
+}""",
+                "variables": {**base_vars, "dateFrom": "2026-03-10", "dateTo": "2026-03-14"},
+            })
+
+            # Test 7: Try querying just __typename (no date args at all)
+            print("=== Test 7: Just __typename (minimal query) ===")
+            await test_query(client, "Minimal - just __typename", {
+                "operationName": "NrtDailyUsage",
+                "query": """query NrtDailyUsage($meterNumber: String!, $premiseNumber: String!, $servicePointNumber: String!, $meterPointNumber: String!) {
+  amiEnergyUsages(meterNumber: $meterNumber, premiseNumber: $premiseNumber, servicePointNumber: $servicePointNumber, meterPointNumber: $meterPointNumber) {
+    __typename
+  }
+}""",
+                "variables": base_vars,
+            })
+
+            # Test 8: Try the 15-minute variant (amiEnergyUsages15Min)
+            print("=== Test 8: amiEnergyUsages15Min (different endpoint) ===")
+            await test_query(client, "15-min variant", {
+                "operationName": "NrtDailyUsage15Min",
+                "query": """query NrtDailyUsage15Min($meterNumber: String!, $premiseNumber: String!, $servicePointNumber: String!, $meterPointNumber: String!, $dateFrom: Date!, $dateTo: Date!) {
+  amiEnergyUsages15Min(meterNumber: $meterNumber, premiseNumber: $premiseNumber, servicePointNumber: $servicePointNumber, meterPointNumber: $meterPointNumber, dateFrom: $dateFrom, dateTo: $dateTo) {
+    nodes { date fuelType quantity }
+  }
+}""",
+                "variables": {**base_vars, "dateFrom": "2026-03-10", "dateTo": "2026-03-14"},
+            })
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
